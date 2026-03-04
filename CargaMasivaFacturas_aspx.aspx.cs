@@ -21,6 +21,7 @@ using ExcelDataReader;
 using DevExpress.Web.ASPxUploadControl;
 using OfficeOpenXml;
 using System.Configuration;
+using System.Data.SqlClient;
 
 public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 {
@@ -486,6 +487,151 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         ExcelWorksheet wsIban = pck.Workbook.Worksheets["Iban"];
         wsIban = GenerateMatrix(strProveedor, strCuentaProveedor, strCuenta, wsIban, "TablaIban");
 
+        // Hoja oculta con datos de gastos por proveedor (tbl_Provider_Gasto)
+        ExcelWorksheet wsProviderGasto = pck.Workbook.Worksheets["HojaOcultaGastosProveedor"] ?? pck.Workbook.Worksheets.Add("HojaOcultaGastosProveedor");
+        wsProviderGasto.Cells.Clear();
+        string[] providerGastoHeaders =
+        {
+            "ID",
+            "CompanyID",
+            "ProviderID",
+            "ProjectID",
+            "NumFactura",
+            "Importe",
+            "Tipo_Gasto",
+            "TipoDireccion",
+            "Grupo",
+            "Subtipo",
+            "Departamento",
+            "Observaciones"
+        };
+        for (int c = 0; c < providerGastoHeaders.Length; c++)
+        {
+            wsProviderGasto.Cells[1, c + 1].Value = providerGastoHeaders[c];
+        }
+
+        string providerIdFilter = null;
+        if (HttpContext.Current != null && HttpContext.Current.Request != null)
+        {
+            providerIdFilter = (HttpContext.Current.Request["ProviderID"] ?? HttpContext.Current.Request["ProviderId"]);
+        }
+        providerIdFilter = (providerIdFilter ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(providerIdFilter) && HttpContext.Current != null && HttpContext.Current.Profile != null)
+        {
+            try
+            {
+                object pid1 = HttpContext.Current.Profile.GetPropertyValue("ProviderID");
+                object pid2 = HttpContext.Current.Profile.GetPropertyValue("ProviderId");
+                providerIdFilter = (pid1 != null ? pid1.ToString() : (pid2 != null ? pid2.ToString() : null));
+            }
+            catch { }
+        }
+        providerIdFilter = (providerIdFilter ?? string.Empty).Trim();
+
+        string companyIdFilter = null;
+        if (HttpContext.Current != null && HttpContext.Current.Request != null)
+        {
+            companyIdFilter = (HttpContext.Current.Request["CompanyID"] ?? HttpContext.Current.Request["CompanyId"]);
+        }
+        companyIdFilter = (companyIdFilter ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(companyIdFilter) && HttpContext.Current != null && HttpContext.Current.Profile != null)
+        {
+            try
+            {
+                object cid1 = HttpContext.Current.Profile.GetPropertyValue("CompanyID");
+                object cid2 = HttpContext.Current.Profile.GetPropertyValue("CompanyId");
+                companyIdFilter = (cid1 != null ? cid1.ToString() : (cid2 != null ? cid2.ToString() : null));
+            }
+            catch { }
+        }
+        companyIdFilter = (companyIdFilter ?? string.Empty).Trim();
+
+        string connStr = null;
+        try
+        {
+            if (ConfigurationManager.ConnectionStrings != null)
+            {
+                connStr =
+                    (ConfigurationManager.ConnectionStrings["ConnectionString"] != null ? ConfigurationManager.ConnectionStrings["ConnectionString"].ConnectionString : null) ??
+                    (ConfigurationManager.ConnectionStrings["DefaultConnection"] != null ? ConfigurationManager.ConnectionStrings["DefaultConnection"].ConnectionString : null);
+
+                if (string.IsNullOrWhiteSpace(connStr) && ConfigurationManager.ConnectionStrings.Count > 0)
+                {
+                    connStr = (ConfigurationManager.ConnectionStrings[0] != null ? ConfigurationManager.ConnectionStrings[0].ConnectionString : null);
+                }
+            }
+        }
+        catch { }
+
+        if (!string.IsNullOrWhiteSpace(connStr) && !string.IsNullOrWhiteSpace(providerIdFilter))
+        {
+            DataTable dtProviderGasto = new DataTable();
+            const string sqlProviderGasto = @"
+SELECT
+    pg.[ID],
+    pg.[CompanyID],
+    pg.[ProviderID],
+    pg.[ProjectID],
+    pg.[NumFactura],
+    pg.[Importe],
+    pg.[Tipo_Gasto],
+    pg.[TipoDireccion],
+    pg.[Grupo],
+    pg.[Subtipo],
+    pg.[Departamento],
+    pg.[Observaciones]
+FROM [dbo].[tbl_Provider_Gasto] AS pg
+WHERE
+    pg.[Active] = 1
+    AND pg.[ProviderID] = @ProviderID
+    AND (@CompanyID IS NULL OR pg.[CompanyID] = @CompanyID);";
+
+            try
+            {
+                using (var con = new SqlConnection(connStr))
+                using (var cmd = new SqlCommand(sqlProviderGasto, con))
+                using (var da = new SqlDataAdapter(cmd))
+                {
+                    int providerIdParsed;
+                    if (!int.TryParse(providerIdFilter, out providerIdParsed))
+                    {
+                        dtProviderGasto = null;
+                    }
+                    else
+                    {
+                        cmd.Parameters.Add("@ProviderID", SqlDbType.Int).Value = providerIdParsed;
+                        if (string.IsNullOrWhiteSpace(companyIdFilter))
+                        {
+                            cmd.Parameters.Add("@CompanyID", SqlDbType.VarChar).Value = DBNull.Value;
+                        }
+                        else
+                        {
+                            cmd.Parameters.Add("@CompanyID", SqlDbType.VarChar, 50).Value = companyIdFilter;
+                        }
+
+                        da.Fill(dtProviderGasto);
+                    }
+                }
+            }
+            catch
+            {
+                dtProviderGasto = null;
+            }
+
+            if (dtProviderGasto != null && dtProviderGasto.Rows.Count > 0)
+            {
+                int startRow = 2;
+                for (int r = 0; r < dtProviderGasto.Rows.Count; r++)
+                {
+                    var dr = dtProviderGasto.Rows[r];
+                    for (int c = 0; c < providerGastoHeaders.Length; c++)
+                    {
+                        wsProviderGasto.Cells[startRow + r, c + 1].Value = dr[c];
+                    }
+                }
+            }
+        }
+
         #region FILL MAIN WS
 
         ExcelWorksheet mainWs = pck.Workbook.Worksheets["Facturas"];
@@ -621,6 +767,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         wsEmpresaEmpresa.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsTipoProveedorProveedor.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsIban.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
+        wsProviderGasto.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
 
         ExcelWorksheet wsEstado = pck.Workbook.Worksheets["Estado"];
         wsEstado.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
