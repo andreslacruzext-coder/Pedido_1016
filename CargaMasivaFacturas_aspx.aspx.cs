@@ -436,6 +436,112 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         string[] strCuentaProveedor, strCuenta;
         cargarCuantasBancarias(out strCuentaProveedor, out strCuenta, dtCuentasBancarias);
 
+        // GASTOS POR PROVEEDOR/EMPRESA
+        DataTable dtProviderGasto = new DataTable();
+        dtProviderGasto.Columns.Add("ID");
+        dtProviderGasto.Columns.Add("CompanyID");
+        dtProviderGasto.Columns.Add("ProviderID");
+        dtProviderGasto.Columns.Add("ProjectID");
+        dtProviderGasto.Columns.Add("NumFactura");
+        dtProviderGasto.Columns.Add("Importe");
+        dtProviderGasto.Columns.Add("Tipo_Gasto");
+        dtProviderGasto.Columns.Add("TipoDireccion");
+        dtProviderGasto.Columns.Add("Grupo");
+        dtProviderGasto.Columns.Add("Subtipo");
+        dtProviderGasto.Columns.Add("Departamento");
+        dtProviderGasto.Columns.Add("Observaciones");
+
+        try
+        {
+            string providerIdFilter = string.Empty;
+            string companyIdFilter = string.Empty;
+
+            if (Request != null)
+            {
+                providerIdFilter = (Request["ProviderID"] ?? Request["providerid"] ?? string.Empty).Trim();
+                companyIdFilter = (Request["CompanyID"] ?? Request["companyid"] ?? Request["Company"] ?? Request["company"] ?? string.Empty).Trim();
+            }
+
+            string connectionString = string.Empty;
+            string[] connectionCandidates = { "PBASE", "PBase", "ConnectionString", "DefaultConnection", "JobSiteStarterKitConnectionString" };
+
+            foreach (string candidateName in connectionCandidates)
+            {
+                ConnectionStringSettings candidate = ConfigurationManager.ConnectionStrings[candidateName];
+                if (candidate != null && !string.IsNullOrWhiteSpace(candidate.ConnectionString))
+                {
+                    connectionString = candidate.ConnectionString;
+                    break;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                foreach (ConnectionStringSettings connection in ConfigurationManager.ConnectionStrings)
+                {
+                    if (connection == null || string.IsNullOrWhiteSpace(connection.ConnectionString))
+                    {
+                        continue;
+                    }
+
+                    if (connection.Name == "LocalSqlServer")
+                    {
+                        continue;
+                    }
+
+                    connectionString = connection.ConnectionString;
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(connectionString))
+            {
+                StringBuilder query = new StringBuilder();
+                query.Append("SELECT ");
+                query.Append("pg.[ID], pg.[CompanyID], pg.[ProviderID], pg.[ProjectID], pg.[NumFactura], ");
+                query.Append("pg.[Importe], pg.[Tipo_Gasto], pg.[TipoDireccion], pg.[Grupo], pg.[Subtipo], ");
+                query.Append("pg.[Departamento], pg.[Observaciones] ");
+                query.Append("FROM [dbo].[tbl_Provider_Gasto] AS pg ");
+                query.Append("WHERE pg.[Active] = 1 ");
+
+                if (!string.IsNullOrWhiteSpace(providerIdFilter))
+                {
+                    query.Append("AND pg.[ProviderID] = @ProviderID ");
+                }
+
+                if (!string.IsNullOrWhiteSpace(companyIdFilter))
+                {
+                    query.Append("AND (pg.[CompanyID] = @CompanyID OR pg.[CompanyID] IS NULL) ");
+                }
+
+                using (System.Data.SqlClient.SqlConnection sqlConnection = new System.Data.SqlClient.SqlConnection(connectionString))
+                {
+                    using (System.Data.SqlClient.SqlCommand sqlCommand = new System.Data.SqlClient.SqlCommand(query.ToString(), sqlConnection))
+                    {
+                        if (!string.IsNullOrWhiteSpace(providerIdFilter))
+                        {
+                            sqlCommand.Parameters.AddWithValue("@ProviderID", providerIdFilter);
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(companyIdFilter))
+                        {
+                            sqlCommand.Parameters.AddWithValue("@CompanyID", companyIdFilter);
+                        }
+
+                        using (System.Data.SqlClient.SqlDataAdapter sqlAdapter = new System.Data.SqlClient.SqlDataAdapter(sqlCommand))
+                        {
+                            dtProviderGasto.Rows.Clear();
+                            sqlAdapter.Fill(dtProviderGasto);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            JobSiteStarterKit.DAL.traza.TrazaPBASE.WriteError(ex.Message, ex.Source);
+        }
+
         #endregion
 
         ExcelWorksheet wsEmpresa = pck.Workbook.Worksheets["Empresa"];
@@ -485,6 +591,17 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
         ExcelWorksheet wsIban = pck.Workbook.Worksheets["Iban"];
         wsIban = GenerateMatrix(strProveedor, strCuentaProveedor, strCuenta, wsIban, "TablaIban");
+
+        ExcelWorksheet wsProveedorGasto = pck.Workbook.Worksheets["Proveedor_Gasto"];
+        if (wsProveedorGasto == null)
+        {
+            wsProveedorGasto = pck.Workbook.Worksheets.Add("Proveedor_Gasto");
+        }
+        else
+        {
+            wsProveedorGasto.Cells.Clear();
+        }
+        wsProveedorGasto.Cells[1, 1].LoadFromDataTable(dtProviderGasto, true);
 
         #region FILL MAIN WS
 
@@ -621,6 +738,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         wsEmpresaEmpresa.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsTipoProveedorProveedor.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsIban.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
+        wsProveedorGasto.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
 
         ExcelWorksheet wsEstado = pck.Workbook.Worksheets["Estado"];
         wsEstado.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
