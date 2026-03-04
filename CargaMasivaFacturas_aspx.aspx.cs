@@ -21,6 +21,7 @@ using ExcelDataReader;
 using DevExpress.Web.ASPxUploadControl;
 using OfficeOpenXml;
 using System.Configuration;
+using System.Data.SqlClient;
 
 public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 {
@@ -373,6 +374,116 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         return ws;
     }
 
+    private static int? TryParseNullableInt(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)) return value;
+        return null;
+    }
+
+    private static int? GetQueryInt(params string[] keys)
+    {
+        var req = HttpContext.Current?.Request;
+        if (req == null) return null;
+
+        foreach (var key in keys)
+        {
+            var parsed = TryParseNullableInt(req.QueryString[key]);
+            if (parsed.HasValue) return parsed.Value;
+        }
+        return null;
+    }
+
+    private static string ResolveSqlConnectionString()
+    {
+        // Prefer a custom app connection string; fall back to the first non-empty one.
+        foreach (ConnectionStringSettings cs in ConfigurationManager.ConnectionStrings)
+        {
+            if (cs == null) continue;
+            if (string.IsNullOrWhiteSpace(cs.ConnectionString)) continue;
+
+            var name = (cs.Name ?? string.Empty).ToLowerInvariant();
+            if (name.Contains("localsqlserver")) continue;
+            if (name.Contains("aspnet")) continue;
+
+            return cs.ConnectionString;
+        }
+
+        throw new InvalidOperationException("No SQL connection string found in ConfigurationManager.ConnectionStrings.");
+    }
+
+    private static DataTable CreateProviderGastoSchema()
+    {
+        var dt = new DataTable();
+        dt.Locale = CultureInfo.InvariantCulture;
+
+        dt.Columns.Add("ID", typeof(int));
+        dt.Columns.Add("CompanyID", typeof(int));
+        dt.Columns.Add("ProviderID", typeof(int));
+        dt.Columns.Add("ProjectID", typeof(int));
+        dt.Columns.Add("NumFactura", typeof(string));
+        dt.Columns.Add("Importe", typeof(decimal));
+        dt.Columns.Add("Tipo_Gasto", typeof(string));
+        dt.Columns.Add("TipoDireccion", typeof(string));
+        dt.Columns.Add("Grupo", typeof(string));
+        dt.Columns.Add("Subtipo", typeof(string));
+        dt.Columns.Add("Departamento", typeof(string));
+        dt.Columns.Add("Observaciones", typeof(string));
+
+        return dt;
+    }
+
+    private static DataTable GetProviderGastoData(int? companyId, int? providerId)
+    {
+        var dt = CreateProviderGastoSchema();
+
+        string sql = @"
+SELECT
+    pg.[ID],
+    pg.[CompanyID],
+    pg.[ProviderID],
+    pg.[ProjectID],
+    pg.[NumFactura],
+    pg.[Importe],
+    pg.[Tipo_Gasto],
+    pg.[TipoDireccion],
+    pg.[Grupo],
+    pg.[Subtipo],
+    pg.[Departamento],
+    pg.[Observaciones]
+FROM [dbo].[tbl_Provider_Gasto] AS pg
+WHERE
+    pg.[Active] = 1
+    AND (@CompanyID IS NULL OR pg.[CompanyID] = @CompanyID OR pg.[CompanyID] IS NULL)
+    AND (@ProviderID IS NULL OR pg.[ProviderID] = @ProviderID OR pg.[ProviderID] IS NULL)
+ORDER BY
+    pg.[ID];";
+
+        using (var conn = new SqlConnection(ResolveSqlConnectionString()))
+        using (var cmd = new SqlCommand(sql, conn))
+        using (var da = new SqlDataAdapter(cmd))
+        {
+            cmd.Parameters.Add("@CompanyID", SqlDbType.Int).Value = (object)companyId ?? DBNull.Value;
+            cmd.Parameters.Add("@ProviderID", SqlDbType.Int).Value = (object)providerId ?? DBNull.Value;
+            da.Fill(dt);
+        }
+
+        return dt;
+    }
+
+    private static void FillProviderGastoWorksheet(ExcelWorksheet ws, DataTable dt)
+    {
+        if (ws == null) throw new ArgumentNullException(nameof(ws));
+        if (dt == null) dt = CreateProviderGastoSchema();
+
+        ws.Cells.Clear();
+        ws.Cells["A1"].LoadFromDataTable(dt, true);
+
+        int rows = Math.Max(1, dt.Rows.Count + 1);
+        int cols = Math.Max(1, dt.Columns.Count);
+        ws.Cells[1, 1, rows, cols].AutoFitColumns();
+    }
+
     public void GeneraExcel(object sender, EventArgs e)
     {
         // DEFINIMOS UN LÍMITE RAZONABLE PARA EL USUARIO
@@ -485,6 +596,25 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
         ExcelWorksheet wsIban = pck.Workbook.Worksheets["Iban"];
         wsIban = GenerateMatrix(strProveedor, strCuentaProveedor, strCuenta, wsIban, "TablaIban");
+
+        // Hoja oculta con tbl_Provider_Gasto (filtrada por CompanyID/ProviderID si vienen en la URL).
+        var companyIdFilter = GetQueryInt("CompanyID", "CompanyId", "companyid", "company");
+        var providerIdFilter = GetQueryInt("ProviderID", "ProviderId", "providerid", "provider");
+
+        ExcelWorksheet wsHojaOcultaGastosProveedor = pck.Workbook.Worksheets["HojaOcultaGastosProveedor"]
+            ?? pck.Workbook.Worksheets.Add("HojaOcultaGastosProveedor");
+
+        try
+        {
+            var dtProviderGasto = GetProviderGastoData(companyIdFilter, providerIdFilter);
+            FillProviderGastoWorksheet(wsHojaOcultaGastosProveedor, dtProviderGasto);
+        }
+        catch (Exception ex)
+        {
+            // No bloqueamos la descarga de la plantilla si falla el acceso a BBDD.
+            try { JobSiteStarterKit.DAL.traza.TrazaPBASE.WriteError(ex.Message, ex.Source); } catch { }
+            FillProviderGastoWorksheet(wsHojaOcultaGastosProveedor, CreateProviderGastoSchema());
+        }
 
         #region FILL MAIN WS
 
@@ -621,6 +751,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         wsEmpresaEmpresa.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsTipoProveedorProveedor.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsIban.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
+        wsHojaOcultaGastosProveedor.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
 
         ExcelWorksheet wsEstado = pck.Workbook.Worksheets["Estado"];
         wsEstado.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
