@@ -388,6 +388,11 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         return value.ToString().Trim();
     }
 
+    private bool IsNullOrWhiteSpaceCompat(string value)
+    {
+        return string.IsNullOrEmpty(value) || value.Trim().Length == 0;
+    }
+
     private DataTable FilterProviderGastoData(DataTable sourceData, string providerId, string companyId)
     {
         if (sourceData == null)
@@ -397,25 +402,25 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
         IEnumerable<DataRow> rows = sourceData.AsEnumerable();
 
-        if (!string.IsNullOrWhiteSpace(providerId))
+        if (!IsNullOrWhiteSpaceCompat(providerId))
         {
             string normalizedProviderId = providerId.Trim();
             rows = rows.Where(row =>
             {
                 string currentProviderId = GetDataRowStringValue(row, "ProviderID");
                 // Si ProviderID viene null/vacío en la configuración, se permite como fallback.
-                return string.IsNullOrWhiteSpace(currentProviderId) || currentProviderId.Equals(normalizedProviderId, StringComparison.OrdinalIgnoreCase);
+                return IsNullOrWhiteSpaceCompat(currentProviderId) || currentProviderId.Equals(normalizedProviderId, StringComparison.OrdinalIgnoreCase);
             });
         }
 
-        if (!string.IsNullOrWhiteSpace(companyId))
+        if (!IsNullOrWhiteSpaceCompat(companyId))
         {
             string normalizedCompanyId = companyId.Trim();
             rows = rows.Where(row =>
             {
                 string currentCompanyId = GetDataRowStringValue(row, "CompanyID");
                 // Si CompanyID viene null/vacío en la configuración, se permite como fallback.
-                return string.IsNullOrWhiteSpace(currentCompanyId) || currentCompanyId.Equals(normalizedCompanyId, StringComparison.OrdinalIgnoreCase);
+                return IsNullOrWhiteSpaceCompat(currentCompanyId) || currentCompanyId.Equals(normalizedCompanyId, StringComparison.OrdinalIgnoreCase);
             });
         }
 
@@ -438,7 +443,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
     private string NormalizeProviderGastoFilter(string value)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (IsNullOrWhiteSpaceCompat(value))
         {
             return null;
         }
@@ -564,13 +569,13 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         cargarCuantasBancarias(out strCuentaProveedor, out strCuenta, dtCuentasBancarias);
 
         string providerIdFilter = NormalizeProviderGastoFilter(Request["ProviderID"]);
-        if (string.IsNullOrWhiteSpace(providerIdFilter))
+        if (IsNullOrWhiteSpaceCompat(providerIdFilter))
         {
             providerIdFilter = NormalizeProviderGastoFilter(Request["Provider"]);
         }
 
         string companyIdFilter = NormalizeProviderGastoFilter(Request["CompanyID"]);
-        if (string.IsNullOrWhiteSpace(companyIdFilter))
+        if (IsNullOrWhiteSpaceCompat(companyIdFilter))
         {
             companyIdFilter = NormalizeProviderGastoFilter(Request["Company"]);
         }
