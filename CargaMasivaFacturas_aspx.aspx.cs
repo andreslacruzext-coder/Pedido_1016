@@ -1,5 +1,6 @@
     using System;
 using System.Data;
+using System.Data.SqlClient;
 using System.Web;
 using System.Web.UI.WebControls;
 using System.Collections.Generic;
@@ -373,6 +374,176 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         return ws;
     }
 
+    private string ResolveConnectionString()
+    {
+        string[] preferredConnectionNames = {
+            "ConnectionString",
+            "DefaultConnection",
+            "JobSiteStarterKitConnectionString",
+            "PBaseConnectionString"
+        };
+
+        foreach (string name in preferredConnectionNames)
+        {
+            ConnectionStringSettings settings = ConfigurationManager.ConnectionStrings[name];
+            if (settings != null && !string.IsNullOrWhiteSpace(settings.ConnectionString))
+            {
+                return settings.ConnectionString;
+            }
+        }
+
+        foreach (ConnectionStringSettings settings in ConfigurationManager.ConnectionStrings)
+        {
+            if (settings == null || string.IsNullOrWhiteSpace(settings.ConnectionString))
+            {
+                continue;
+            }
+
+            if (settings.Name.Equals("LocalSqlServer", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return settings.ConnectionString;
+        }
+
+        return string.Empty;
+    }
+
+    private DataTable GetProviderGastoData(string providerId, string companyId)
+    {
+        DataTable dtProviderGasto = new DataTable();
+        string connectionString = ResolveConnectionString();
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return dtProviderGasto;
+        }
+
+        StringBuilder sql = new StringBuilder();
+        sql.Append("SELECT ");
+        sql.Append("pg.[ID], ");
+        sql.Append("pg.[CompanyID], ");
+        sql.Append("pg.[ProviderID], ");
+        sql.Append("pg.[ProjectID], ");
+        sql.Append("pg.[NumFactura], ");
+        sql.Append("pg.[Importe], ");
+        sql.Append("pg.[Tipo_Gasto], ");
+        sql.Append("pg.[TipoDireccion], ");
+        sql.Append("pg.[Grupo], ");
+        sql.Append("pg.[Subtipo], ");
+        sql.Append("pg.[Departamento], ");
+        sql.Append("pg.[Observaciones] ");
+        sql.Append("FROM [dbo].[tbl_Provider_Gasto] AS pg ");
+        sql.Append("WHERE pg.[Active] = 1 ");
+
+        if (!string.IsNullOrWhiteSpace(providerId))
+        {
+            // Cuando se filtra por proveedor, también se incluyen filas con ProviderID NULL como fallback.
+            sql.Append("AND (CONVERT(NVARCHAR(50), pg.[ProviderID]) = @ProviderID OR pg.[ProviderID] IS NULL) ");
+        }
+
+        if (!string.IsNullOrWhiteSpace(companyId))
+        {
+            // Cuando se filtra por compañía, también se incluyen filas con CompanyID NULL como fallback.
+            sql.Append("AND (CONVERT(NVARCHAR(50), pg.[CompanyID]) = @CompanyID OR pg.[CompanyID] IS NULL) ");
+        }
+
+        sql.Append("ORDER BY pg.[CompanyID], pg.[ProviderID], pg.[Tipo_Gasto], pg.[Grupo], pg.[Subtipo], pg.[Departamento]");
+
+        try
+        {
+            using (SqlConnection connection = new SqlConnection(connectionString))
+            using (SqlCommand command = new SqlCommand(sql.ToString(), connection))
+            {
+                if (!string.IsNullOrWhiteSpace(providerId))
+                {
+                    command.Parameters.Add("@ProviderID", SqlDbType.NVarChar, 50).Value = providerId.Trim();
+                }
+
+                if (!string.IsNullOrWhiteSpace(companyId))
+                {
+                    command.Parameters.Add("@CompanyID", SqlDbType.NVarChar, 50).Value = companyId.Trim();
+                }
+
+                using (SqlDataAdapter adapter = new SqlDataAdapter(command))
+                {
+                    adapter.Fill(dtProviderGasto);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            JobSiteStarterKit.DAL.traza.TrazaPBASE.WriteError(ex.Message, ex.Source);
+        }
+
+        return dtProviderGasto;
+    }
+
+    private string NormalizeProviderGastoFilter(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string cleanValue = value.Trim();
+        if (cleanValue.Equals("NULL", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return cleanValue;
+    }
+
+    private void FillProviderGastoWorksheet(ExcelWorksheet ws, DataTable dtProviderGasto)
+    {
+        if (ws == null)
+        {
+            return;
+        }
+
+        ws.Cells.Clear();
+
+        string[] fallbackHeaders = {
+            "ID",
+            "CompanyID",
+            "ProviderID",
+            "ProjectID",
+            "NumFactura",
+            "Importe",
+            "Tipo_Gasto",
+            "TipoDireccion",
+            "Grupo",
+            "Subtipo",
+            "Departamento",
+            "Observaciones"
+        };
+
+        if (dtProviderGasto == null || dtProviderGasto.Columns.Count == 0)
+        {
+            for (int i = 0; i < fallbackHeaders.Length; i++)
+            {
+                ws.Cells[1, i + 1].Value = fallbackHeaders[i];
+            }
+
+            return;
+        }
+
+        for (int c = 0; c < dtProviderGasto.Columns.Count; c++)
+        {
+            ws.Cells[1, c + 1].Value = dtProviderGasto.Columns[c].ColumnName;
+        }
+
+        for (int r = 0; r < dtProviderGasto.Rows.Count; r++)
+        {
+            for (int c = 0; c < dtProviderGasto.Columns.Count; c++)
+            {
+                ws.Cells[r + 2, c + 1].Value = dtProviderGasto.Rows[r][c];
+            }
+        }
+    }
+
     public void GeneraExcel(object sender, EventArgs e)
     {
         // DEFINIMOS UN LÍMITE RAZONABLE PARA EL USUARIO
@@ -436,6 +607,20 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         string[] strCuentaProveedor, strCuenta;
         cargarCuantasBancarias(out strCuentaProveedor, out strCuenta, dtCuentasBancarias);
 
+        string providerIdFilter = NormalizeProviderGastoFilter(Request["ProviderID"]);
+        if (string.IsNullOrWhiteSpace(providerIdFilter))
+        {
+            providerIdFilter = NormalizeProviderGastoFilter(Request["Provider"]);
+        }
+
+        string companyIdFilter = NormalizeProviderGastoFilter(Request["CompanyID"]);
+        if (string.IsNullOrWhiteSpace(companyIdFilter))
+        {
+            companyIdFilter = NormalizeProviderGastoFilter(Request["Company"]);
+        }
+
+        DataTable dtProviderGasto = GetProviderGastoData(providerIdFilter, companyIdFilter);
+
         #endregion
 
         ExcelWorksheet wsEmpresa = pck.Workbook.Worksheets["Empresa"];
@@ -485,6 +670,13 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
         ExcelWorksheet wsIban = pck.Workbook.Worksheets["Iban"];
         wsIban = GenerateMatrix(strProveedor, strCuentaProveedor, strCuenta, wsIban, "TablaIban");
+
+        ExcelWorksheet wsProviderGasto = pck.Workbook.Worksheets["Provider_Gasto"];
+        if (wsProviderGasto == null)
+        {
+            wsProviderGasto = pck.Workbook.Worksheets.Add("Provider_Gasto");
+        }
+        FillProviderGastoWorksheet(wsProviderGasto, dtProviderGasto);
 
         #region FILL MAIN WS
 
@@ -621,6 +813,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         wsEmpresaEmpresa.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsTipoProveedorProveedor.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
         wsIban.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
+        wsProviderGasto.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
 
         ExcelWorksheet wsEstado = pck.Workbook.Worksheets["Estado"];
         wsEstado.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
