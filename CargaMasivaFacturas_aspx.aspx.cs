@@ -1,6 +1,5 @@
     using System;
 using System.Data;
-using System.Data.SqlClient;
 using System.Web;
 using System.Web.UI.WebControls;
 using System.Collections.Generic;
@@ -21,7 +20,6 @@ using DevExpress.Web.ASPxGridView;
 using ExcelDataReader;
 using DevExpress.Web.ASPxUploadControl;
 using OfficeOpenXml;
-using System.Configuration;
 
 public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 {
@@ -374,110 +372,68 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         return ws;
     }
 
-    private string ResolveConnectionString()
+    private string GetDataRowStringValue(DataRow row, string columnName)
     {
-        string[] preferredConnectionNames = {
-            "ConnectionString",
-            "DefaultConnection",
-            "JobSiteStarterKitConnectionString",
-            "PBaseConnectionString"
-        };
-
-        foreach (string name in preferredConnectionNames)
+        if (row == null || row.Table == null || !row.Table.Columns.Contains(columnName))
         {
-            ConnectionStringSettings settings = ConfigurationManager.ConnectionStrings[name];
-            if (settings != null && !string.IsNullOrWhiteSpace(settings.ConnectionString))
-            {
-                return settings.ConnectionString;
-            }
+            return string.Empty;
         }
 
-        foreach (ConnectionStringSettings settings in ConfigurationManager.ConnectionStrings)
+        object value = row[columnName];
+        if (value == null || value == DBNull.Value)
         {
-            if (settings == null || string.IsNullOrWhiteSpace(settings.ConnectionString))
-            {
-                continue;
-            }
-
-            if (settings.Name.Equals("LocalSqlServer", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            return settings.ConnectionString;
+            return string.Empty;
         }
 
-        return string.Empty;
+        return value.ToString().Trim();
     }
 
-    private DataTable GetProviderGastoData(string providerId, string companyId)
+    private DataTable FilterProviderGastoData(DataTable sourceData, string providerId, string companyId)
     {
-        DataTable dtProviderGasto = new DataTable();
-        string connectionString = ResolveConnectionString();
-
-        if (string.IsNullOrWhiteSpace(connectionString))
+        if (sourceData == null)
         {
-            return dtProviderGasto;
+            return new DataTable();
         }
 
-        StringBuilder sql = new StringBuilder();
-        sql.Append("SELECT ");
-        sql.Append("pg.[ID], ");
-        sql.Append("pg.[CompanyID], ");
-        sql.Append("pg.[ProviderID], ");
-        sql.Append("pg.[ProjectID], ");
-        sql.Append("pg.[NumFactura], ");
-        sql.Append("pg.[Importe], ");
-        sql.Append("pg.[Tipo_Gasto], ");
-        sql.Append("pg.[TipoDireccion], ");
-        sql.Append("pg.[Grupo], ");
-        sql.Append("pg.[Subtipo], ");
-        sql.Append("pg.[Departamento], ");
-        sql.Append("pg.[Observaciones] ");
-        sql.Append("FROM [dbo].[tbl_Provider_Gasto] AS pg ");
-        sql.Append("WHERE pg.[Active] = 1 ");
+        IEnumerable<DataRow> rows = sourceData.AsEnumerable();
 
         if (!string.IsNullOrWhiteSpace(providerId))
         {
-            // Cuando se filtra por proveedor, también se incluyen filas con ProviderID NULL como fallback.
-            sql.Append("AND (CONVERT(NVARCHAR(50), pg.[ProviderID]) = @ProviderID OR pg.[ProviderID] IS NULL) ");
+            string normalizedProviderId = providerId.Trim();
+            rows = rows.Where(row =>
+            {
+                string currentProviderId = GetDataRowStringValue(row, "ProviderID");
+                // Si ProviderID viene null/vacío en la configuración, se permite como fallback.
+                return string.IsNullOrWhiteSpace(currentProviderId) || currentProviderId.Equals(normalizedProviderId, StringComparison.OrdinalIgnoreCase);
+            });
         }
 
         if (!string.IsNullOrWhiteSpace(companyId))
         {
-            // Cuando se filtra por compañía, también se incluyen filas con CompanyID NULL como fallback.
-            sql.Append("AND (CONVERT(NVARCHAR(50), pg.[CompanyID]) = @CompanyID OR pg.[CompanyID] IS NULL) ");
-        }
-
-        sql.Append("ORDER BY pg.[CompanyID], pg.[ProviderID], pg.[Tipo_Gasto], pg.[Grupo], pg.[Subtipo], pg.[Departamento]");
-
-        try
-        {
-            using (SqlConnection connection = new SqlConnection(connectionString))
-            using (SqlCommand command = new SqlCommand(sql.ToString(), connection))
+            string normalizedCompanyId = companyId.Trim();
+            rows = rows.Where(row =>
             {
-                if (!string.IsNullOrWhiteSpace(providerId))
-                {
-                    command.Parameters.Add("@ProviderID", SqlDbType.NVarChar, 50).Value = providerId.Trim();
-                }
-
-                if (!string.IsNullOrWhiteSpace(companyId))
-                {
-                    command.Parameters.Add("@CompanyID", SqlDbType.NVarChar, 50).Value = companyId.Trim();
-                }
-
-                using (SqlDataAdapter adapter = new SqlDataAdapter(command))
-                {
-                    adapter.Fill(dtProviderGasto);
-                }
-            }
+                string currentCompanyId = GetDataRowStringValue(row, "CompanyID");
+                // Si CompanyID viene null/vacío en la configuración, se permite como fallback.
+                return string.IsNullOrWhiteSpace(currentCompanyId) || currentCompanyId.Equals(normalizedCompanyId, StringComparison.OrdinalIgnoreCase);
+            });
         }
-        catch (Exception ex)
+
+        rows = rows
+            .OrderBy(row => GetDataRowStringValue(row, "CompanyID"))
+            .ThenBy(row => GetDataRowStringValue(row, "ProviderID"))
+            .ThenBy(row => GetDataRowStringValue(row, "Tipo_Gasto"))
+            .ThenBy(row => GetDataRowStringValue(row, "Grupo"))
+            .ThenBy(row => GetDataRowStringValue(row, "Subtipo"))
+            .ThenBy(row => GetDataRowStringValue(row, "Departamento"));
+
+        DataTable filteredData = sourceData.Clone();
+        foreach (DataRow row in rows)
         {
-            JobSiteStarterKit.DAL.traza.TrazaPBASE.WriteError(ex.Message, ex.Source);
+            filteredData.ImportRow(row);
         }
 
-        return dtProviderGasto;
+        return filteredData;
     }
 
     private string NormalizeProviderGastoFilter(string value)
@@ -619,7 +575,8 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
             companyIdFilter = NormalizeProviderGastoFilter(Request["Company"]);
         }
 
-        DataTable dtProviderGasto = GetProviderGastoData(providerIdFilter, companyIdFilter);
+        DataTable dtProviderGastoAll = Providers.GetProviderGastoActiveAll();
+        DataTable dtProviderGasto = FilterProviderGastoData(dtProviderGastoAll, providerIdFilter, companyIdFilter);
 
         #endregion
 
