@@ -457,6 +457,35 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         return cleanValue;
     }
 
+    private void WriteProviderGastoLookupHeaders(ExcelWorksheet ws, int startCol, string keyHeader)
+    {
+        ws.Cells[1, startCol].Value = keyHeader;
+        ws.Cells[1, startCol + 1].Value = "Tipo_Gasto";
+        ws.Cells[1, startCol + 2].Value = "TipoDireccion";
+        ws.Cells[1, startCol + 3].Value = "Grupo";
+        ws.Cells[1, startCol + 4].Value = "Subtipo";
+        ws.Cells[1, startCol + 5].Value = "Departamento";
+    }
+
+    private void WriteProviderGastoLookupBlock(ExcelWorksheet ws, int rowIndex, int startCol, string key, string tipoGasto, string tipoDireccion, string grupo, string subtipo, string departamento)
+    {
+        ws.Cells[rowIndex, startCol].Value = key;
+        ws.Cells[rowIndex, startCol + 1].Value = tipoGasto;
+        ws.Cells[rowIndex, startCol + 2].Value = tipoDireccion;
+        ws.Cells[rowIndex, startCol + 3].Value = grupo;
+        ws.Cells[rowIndex, startCol + 4].Value = subtipo;
+        ws.Cells[rowIndex, startCol + 5].Value = departamento;
+    }
+
+    private string BuildProviderGastoAutofillFormula(int rowNumber, int returnColumnIndex, string rangeExact, string rangeCompanyFallback, string rangeProviderFallback, string rangeGlobalFallback)
+    {
+        return "IF(AND(ISBLANK($Y" + rowNumber + "),ISBLANK($AB" + rowNumber + "))," +
+               "\"\",IFERROR(VLOOKUP($Y" + rowNumber + "&\"|\"&$AB" + rowNumber + "," + rangeExact + "," + returnColumnIndex + ",FALSE)," +
+               "IFERROR(VLOOKUP($Y" + rowNumber + "&\"|\"," + rangeCompanyFallback + "," + returnColumnIndex + ",FALSE)," +
+               "IFERROR(VLOOKUP(\"|\"&$AB" + rowNumber + "," + rangeProviderFallback + "," + returnColumnIndex + ",FALSE)," +
+               "IFERROR(VLOOKUP(\"|\"," + rangeGlobalFallback + "," + returnColumnIndex + ",FALSE),\"\")))))";
+    }
+
     private void FillProviderGastoWorksheet(ExcelWorksheet ws, DataTable dtProviderGasto)
     {
         if (ws == null)
@@ -481,12 +510,22 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
             "Observaciones"
         };
 
+        const int exactLookupStartCol = 13;          // M
+        const int companyFallbackStartCol = 20;      // T
+        const int providerFallbackStartCol = 27;     // AA
+        const int globalFallbackStartCol = 34;       // AH
+
         if (dtProviderGasto == null || dtProviderGasto.Columns.Count == 0)
         {
             for (int i = 0; i < fallbackHeaders.Length; i++)
             {
                 ws.Cells[1, i + 1].Value = fallbackHeaders[i];
             }
+
+            WriteProviderGastoLookupHeaders(ws, exactLookupStartCol, "Key_Company_Provider");
+            WriteProviderGastoLookupHeaders(ws, companyFallbackStartCol, "Key_Company");
+            WriteProviderGastoLookupHeaders(ws, providerFallbackStartCol, "Key_Provider");
+            WriteProviderGastoLookupHeaders(ws, globalFallbackStartCol, "Key_Global");
 
             return;
         }
@@ -496,12 +535,42 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
             ws.Cells[1, c + 1].Value = dtProviderGasto.Columns[c].ColumnName;
         }
 
+        WriteProviderGastoLookupHeaders(ws, exactLookupStartCol, "Key_Company_Provider");
+        WriteProviderGastoLookupHeaders(ws, companyFallbackStartCol, "Key_Company");
+        WriteProviderGastoLookupHeaders(ws, providerFallbackStartCol, "Key_Provider");
+        WriteProviderGastoLookupHeaders(ws, globalFallbackStartCol, "Key_Global");
+
         for (int r = 0; r < dtProviderGasto.Rows.Count; r++)
         {
+            DataRow row = dtProviderGasto.Rows[r];
+            int excelRow = r + 2;
+
             for (int c = 0; c < dtProviderGasto.Columns.Count; c++)
             {
-                ws.Cells[r + 2, c + 1].Value = dtProviderGasto.Rows[r][c];
+                ws.Cells[excelRow, c + 1].Value = row[c];
             }
+
+            string companyId = GetDataRowStringValue(row, "CompanyID");
+            string providerId = GetDataRowStringValue(row, "ProviderID");
+            string tipoGasto = GetDataRowStringValue(row, "Tipo_Gasto").ToUpper();
+            string tipoDireccion = GetDataRowStringValue(row, "TipoDireccion").ToUpper();
+            string grupo = GetDataRowStringValue(row, "Grupo").ToUpper();
+            string subtipo = GetDataRowStringValue(row, "Subtipo").ToUpper();
+            string departamento = GetDataRowStringValue(row, "Departamento").ToUpper();
+
+            bool hasCompany = !IsNullOrWhiteSpaceCompat(companyId);
+            bool hasProvider = !IsNullOrWhiteSpaceCompat(providerId);
+            string nonMatchingKey = "__NO_MATCH__" + excelRow.ToString();
+
+            string keyExact = companyId + "|" + providerId;
+            string keyCompanyFallback = hasCompany && !hasProvider ? companyId + "|" : nonMatchingKey;
+            string keyProviderFallback = !hasCompany && hasProvider ? "|" + providerId : nonMatchingKey;
+            string keyGlobalFallback = !hasCompany && !hasProvider ? "|" : nonMatchingKey;
+
+            WriteProviderGastoLookupBlock(ws, excelRow, exactLookupStartCol, keyExact, tipoGasto, tipoDireccion, grupo, subtipo, departamento);
+            WriteProviderGastoLookupBlock(ws, excelRow, companyFallbackStartCol, keyCompanyFallback, tipoGasto, tipoDireccion, grupo, subtipo, departamento);
+            WriteProviderGastoLookupBlock(ws, excelRow, providerFallbackStartCol, keyProviderFallback, tipoGasto, tipoDireccion, grupo, subtipo, departamento);
+            WriteProviderGastoLookupBlock(ws, excelRow, globalFallbackStartCol, keyGlobalFallback, tipoGasto, tipoDireccion, grupo, subtipo, departamento);
         }
     }
 
@@ -530,6 +599,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         cargarTipoProveedorProveedor(out strTipoProveedorProveedor, out strProveedor1, dtProveedor);
 
         string[] strProveedor = cargarProveedor(dtProveedor);
+        string[] strProveedorId = cargarProveedorId(dtProveedor);
         string[] strProveedorFormaPago, strFormaPago;
         System.Data.DataTable dtProveedorActivo = Providers.GetProvidersActiveAll();
         cargarProveedorFormaPago(out strProveedorFormaPago, out strFormaPago, dtProveedorActivo);
@@ -593,6 +663,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         ExcelWorksheet wsProveedor = pck.Workbook.Worksheets["Proveedor"];
         wsProveedor = FillCol(wsProveedor, 2, 'B', strProveedor);
         wsProveedor = FillCol(wsProveedor, 2, 'C', strFormaPago);
+        wsProveedor = FillCol(wsProveedor, 2, 'D', strProveedorId);
 
         ExcelWorksheet wsProyecto = pck.Workbook.Worksheets["Proyecto"];
         wsProyecto = FillCol(wsProyecto, 2, 'B', strProyecto);
@@ -754,6 +825,33 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
         mainWs.Column(25).Width = 0;
 
+        if (strProveedorId.Length > 0)
+        {
+            string rangoProveedor = "Proveedor!$B$2:$D$" + (strProveedorId.Length + 1).ToString();
+
+            for (int i = 2; i <= MAX_ROWS; i++)
+            {
+                mainWs.Cells[i, 28].Formula = "IF(ISBLANK(C" + i + "), \"\", IFERROR(VLOOKUP(C" + i + "," + rangoProveedor + ",3,FALSE), \"\"))";
+            }
+        }
+
+        mainWs.Column(28).Width = 0;
+
+        int providerGastoLastRow = Math.Max(dtProviderGasto.Rows.Count + 1, 2);
+        string rangeExact = "Provider_Gasto!$M$2:$R$" + providerGastoLastRow.ToString();
+        string rangeCompanyFallback = "Provider_Gasto!$T$2:$Y$" + providerGastoLastRow.ToString();
+        string rangeProviderFallback = "Provider_Gasto!$AA$2:$AF$" + providerGastoLastRow.ToString();
+        string rangeGlobalFallback = "Provider_Gasto!$AH$2:$AM$" + providerGastoLastRow.ToString();
+
+        for (int i = 2; i <= MAX_ROWS; i++)
+        {
+            mainWs.Cells[i, 16].Formula = BuildProviderGastoAutofillFormula(i, 2, rangeExact, rangeCompanyFallback, rangeProviderFallback, rangeGlobalFallback);
+            mainWs.Cells[i, 17].Formula = BuildProviderGastoAutofillFormula(i, 3, rangeExact, rangeCompanyFallback, rangeProviderFallback, rangeGlobalFallback);
+            mainWs.Cells[i, 18].Formula = BuildProviderGastoAutofillFormula(i, 4, rangeExact, rangeCompanyFallback, rangeProviderFallback, rangeGlobalFallback);
+            mainWs.Cells[i, 19].Formula = BuildProviderGastoAutofillFormula(i, 5, rangeExact, rangeCompanyFallback, rangeProviderFallback, rangeGlobalFallback);
+            mainWs.Cells[i, 20].Formula = BuildProviderGastoAutofillFormula(i, 6, rangeExact, rangeCompanyFallback, rangeProviderFallback, rangeGlobalFallback);
+        }
+
         //IBAN
         range = ExcelRange.GetAddress(2, 27, MAX_ROWS, 27);
         val = mainWs.DataValidations.AddListValidation(range);
@@ -798,7 +896,7 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
         ExcelWorksheet wsCuentaOrigen = pck.Workbook.Worksheets["CuentaOrigen"];
         wsCuentaOrigen.Hidden = OfficeOpenXml.eWorkSheetHidden.Hidden;
 
-        pck.Workbook.CalcMode = ExcelCalcMode.Manual;
+        pck.Workbook.CalcMode = ExcelCalcMode.Automatic;
 
         MemoryStream save = new MemoryStream();
         pck.SaveAs(save);
@@ -1122,6 +1220,27 @@ public partial class CargaMasivaFacturas_aspx : System.Web.UI.Page
 
         return stringArr;
 
+    }
+
+    private string[] cargarProveedorId(DataTable dt)
+    {
+        var stringArr = new string[dt.Rows.Count];
+        int i = 0;
+        foreach (DataRow row in dt.Rows)
+        {
+            if (dt.Columns.Contains("ProviderId"))
+            {
+                stringArr[i] = row["ProviderId"].ToString().Trim();
+            }
+            else
+            {
+                stringArr[i] = row[0].ToString().Trim();
+            }
+
+            i++;
+        }
+
+        return stringArr;
     }
 
     protected void cargarProveedorFormaPago(out string[] str1, out string[] str2,DataTable dt)
